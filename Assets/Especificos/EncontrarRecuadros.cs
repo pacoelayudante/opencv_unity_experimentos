@@ -45,17 +45,21 @@ public class EncontrarRecuadros : MonoBehaviour
     [Min(1)]
     public int loopColoresContornos = 5;
     public LineTypes dibujoContornos = LineTypes.AntiAlias;
+    [System.Obsolete]
     public int maxContornosDibujados = 0;
     public UnityEngine.UI.RawImage muestraContornos;
 
     [Header("Recuadro")]
     public float toleranciaLineaRecta = 25f;
+    public int selectorRecuadro = 0;
+    public UnityEngine.UI.RawImage muestraRecuadro;
 
     Texture2D texturaDescargada;
-    Mat matProcesada, matContornosDibujados, matGrisEscalada;
+    Mat matProcesada, matContornosDibujados, matGrisEscalada, matOriginal;
 
     HierarchyIndex[] jerarquiaContornos;
     List<IslaContornos> islas = new List<IslaContornos>();
+    List<Recuadro> recuadros = new List<Recuadro>();
     Point[][] contornos;
 
     class IslaContornos
@@ -69,7 +73,6 @@ public class EncontrarRecuadros : MonoBehaviour
                 if (hijos == null || hijos.Count == 0) return -1;
                 if (areaHijos == -1)
                 {
-                    // areaHijos = hijos.Aggregate(0d, (cant, conto) => Cv2.ContourArea(conto) + cant, res => res);
                     areaHijos = hijos.Select(e => Cv2.ContourArea(e)).Sum();
                 }
                 return areaHijos;
@@ -109,61 +112,118 @@ public class EncontrarRecuadros : MonoBehaviour
         }
     }
 
-    class Recuadro {
-        Point[] contorno;
+    class Recuadro
+    {
+        Point[] contornoOriginal;
         double[] distanciasContornoOriginal;
         float[] angulosOriginal;
         double perimetroOriginal;
         Point[] encuadre = new Point[4];
+        List<LineSegmentPoint> ladosCuadrilatero;
+        List<Point2f> verticesCuadrilatero;
+        List<Recuadro> grupoDeRecuadros;
+        double anchoSupuesto, altoSupuesto;
+        List<Point2f> verticesNormalizados;
 
-        public Recuadro(int indice, Point[][] contornosOriginal, float toleranciaLineaRecta):this(indice,contornosOriginal,toleranciaLineaRecta,Color.red){}
-        public Recuadro(int indice, Point[][] contornosOriginal, float toleranciaLineaRecta, Color color) {
-            contorno = contornosOriginal[indice];
-            distanciasContornoOriginal = contorno.Select((e, index) => Point.Distance(e, contorno[(index + 1) % contorno.Length])).ToArray();
-            angulosOriginal = contorno.Select((e, index) =>
-                Mathf.Rad2Deg*Mathf.Atan2(e.Y - contorno[(index + 1) % contorno.Length].Y, e.X - contorno[(index + 1) % contorno.Length].X) )
+        public List<Recuadro> GrupoDeRecuadros
+        {
+            get => grupoDeRecuadros;
+            set
+            {
+                UnityEngine.Assertions.Assert.IsNull(grupoDeRecuadros);
+                grupoDeRecuadros = value;
+            }
+        }
+
+        public Recuadro(Point[] contorno, float toleranciaLineaRecta)
+        {
+            contornoOriginal = contorno;
+            distanciasContornoOriginal = contornoOriginal.Select((e, index) => Point.Distance(e, contornoOriginal[(index + 1) % contornoOriginal.Length])).ToArray();
+            angulosOriginal = contornoOriginal.Select((e, index) =>
+                Mathf.Rad2Deg * Mathf.Atan2(e.Y - contornoOriginal[(index + 1) % contornoOriginal.Length].Y, e.X - contornoOriginal[(index + 1) % contornoOriginal.Length].X))
                 .ToArray();
             perimetroOriginal = distanciasContornoOriginal.Sum();
-            
+
             var distancias = distanciasContornoOriginal;
             var angulos = angulosOriginal;
-                    var lineas = new List<LineSegmentPoint>();
-                    Point puntoAPos = contorno[0];
-                    var distSumada = distancias[0];
-                    var anguloActual = angulos[0];
-                    int conter = 0;
-                    for (int j = 1; j < distancias.Length + 1; j++)
-                    {
-                        if (Mathf.Abs(Mathf.DeltaAngle(angulos[j % distancias.Length], anguloActual)) <= toleranciaLineaRecta)
-                        {
-                            distSumada += distancias[j % distancias.Length];
-                        }
-                        else
-                        {
-                            // if (distSumada >= minLadoElipse / 4d)
-                            {
-                                // Cv2.Line(matContornosDibujados, puntoAPos, contorno[j%distancias.Length], colScalar);
-                                lineas.Add(new LineSegmentPoint(puntoAPos, contorno[j % distancias.Length]));
-                                conter++;
-                            }
-                            puntoAPos = contorno[j % distancias.Length];
-                            anguloActual = angulos[j % distancias.Length];
-                            distSumada = distancias[j % distancias.Length];
-                        }
-                    }
-                    lineas.OrderByDescending(lin=>lin.P1.DistanceTo(lin.P2)).Take(4).ToArray();
-                    List<Point> polis = new List<Point>();
-                    
-                    var colEscalar = new Scalar(color.b,color.g,color.r,color.a);
-                    for (int j = 0; j < lineas.Count; j++)
-                    {
-                        Point? interx = lineas[j].LineIntersection(lineas[(j + 1) % lineas.Count]);
-                        if (interx.HasValue)
-                        {
-                            // Cv2.Circle(matContornosDibujados,interx.Value,10,colScalar);
-                            polis.Add(interx.Value);
-                        }
-                    }
+            ladosCuadrilatero = new List<LineSegmentPoint>();
+            Point puntoAPos = contornoOriginal[0];
+            var distSumada = distancias[0];
+            var anguloActual = angulos[0];
+
+            for (int j = 1; j < distancias.Length + 1; j++)
+            {
+                if (Mathf.Abs(Mathf.DeltaAngle(angulos[j % distancias.Length], anguloActual)) <= toleranciaLineaRecta)
+                {
+                    distSumada += distancias[j % distancias.Length];
+                }
+                else
+                {
+                    ladosCuadrilatero.Add(new LineSegmentPoint(puntoAPos, contornoOriginal[j % distancias.Length]));
+
+                    puntoAPos = contornoOriginal[j % distancias.Length];
+                    anguloActual = angulos[j % distancias.Length];
+                    distSumada = distancias[j % distancias.Length];
+                }
+            }
+
+            ladosCuadrilatero = ladosCuadrilatero.Select((lin, index) => new { index = index, lin = lin })
+                .OrderByDescending(lin => lin.lin.P1.DistanceTo(lin.lin.P2)).Take(4)
+                .OrderBy(lin => lin.index).Select(lin => lin.lin).ToList();
+            verticesCuadrilatero = new List<Point2f>();
+
+            for (int j = 0; j < ladosCuadrilatero.Count; j++)
+            {
+                Point? interx = ladosCuadrilatero[j].LineIntersection(ladosCuadrilatero[(j + 1) % ladosCuadrilatero.Count]);
+                if (interx.HasValue)
+                {
+                    verticesCuadrilatero.Add(interx.Value);
+                }
+            }
+
+            UnityEngine.Assertions.Assert.IsTrue(ladosCuadrilatero.Count == 4);
+            UnityEngine.Assertions.Assert.IsTrue(verticesCuadrilatero.Count == 4);
+            if (verticesCuadrilatero.Count == 4)
+            {
+                anchoSupuesto = System.Math.Max(
+                    verticesCuadrilatero[0].DistanceTo(verticesCuadrilatero[1])
+                    , verticesCuadrilatero[2].DistanceTo(verticesCuadrilatero[3]));
+                altoSupuesto = System.Math.Max(
+                    verticesCuadrilatero[1].DistanceTo(verticesCuadrilatero[2])
+                    , verticesCuadrilatero[3].DistanceTo(verticesCuadrilatero[0]));
+
+                verticesNormalizados = new List<Point2f>() {
+                    new Point2f(0,0),new Point2f((float)anchoSupuesto,0),
+                    new Point2f((float)anchoSupuesto,(float)altoSupuesto),new Point2f(0,(float)altoSupuesto),
+                };
+            }
+        }
+
+        public void DibujarDebug(Mat imagen, Color col, int grosorLado = 2, int radioVertices = 10)
+        {
+            var colEscalar = new Scalar(col.b * 255, col.g * 255, col.r * 255, col.a * 255);
+            foreach (var vertice in verticesCuadrilatero) Cv2.Circle(imagen, vertice, radioVertices, colEscalar);
+            foreach (var lin in ladosCuadrilatero) Cv2.Line(imagen, lin.P1, lin.P2, colEscalar, grosorLado);
+        }
+
+        public Mat Normalizar(Mat origen, float escala = 1f)
+        {
+            if(origen==null) return null;
+            var tam = new Size(Mathf.FloorToInt((float)anchoSupuesto), Mathf.FloorToInt((float)altoSupuesto));
+            var vertsIn = verticesCuadrilatero;
+            var vertsOut = verticesNormalizados;
+
+            if(escala != 1f) {
+                tam = new Size(Mathf.FloorToInt((float)anchoSupuesto*escala), Mathf.FloorToInt((float)altoSupuesto*escala));
+                vertsIn = vertsIn.Select(e=>e*escala).ToList();
+                vertsOut = vertsOut.Select(e=>e*escala).ToList();
+            }
+            var resultado = new Mat(tam, origen.Type());
+
+            var transform = Cv2.GetPerspectiveTransform(vertsIn, vertsOut);
+            Cv2.WarpPerspective(origen, resultado, transform, tam, InterpolationFlags.Cubic, BorderTypes.Constant, null);
+
+            return resultado;
         }
     }
 
@@ -193,7 +253,7 @@ public class EncontrarRecuadros : MonoBehaviour
         //descarga
         texturaDescargada = texturaInput;
         ActualizarMuestra(muestraDescargada, texturaDescargada);
-        matProcesada = OpenCvSharp.Unity.TextureToMat(texturaDescargada);
+        matProcesada = (matOriginal = OpenCvSharp.Unity.TextureToMat(texturaDescargada) ).Clone();
 
         //preproceso
         if (Procesando("Gris", "Convirtiendo en gris", 1f)) return;
@@ -215,6 +275,7 @@ public class EncontrarRecuadros : MonoBehaviour
 
         if (Procesando("Filtrando", "Filtrando islas segun area", 1f)) return;
         islas.Clear();
+        recuadros.Clear();
         for (int i = 0; i < contornos.Length; i++)
         {
             if (jerarquiaContornos[i].Parent == -1)
@@ -222,7 +283,6 @@ public class EncontrarRecuadros : MonoBehaviour
                 LlenarIslasRecursivo(i, contornos, jerarquiaContornos, islas, umbralPorcentajeAreaIsla);
             }
         }
-
 
         if (muestraContornos)
         {
@@ -236,87 +296,109 @@ public class EncontrarRecuadros : MonoBehaviour
             // matContornosDibujados.SetTo(colScalar);
             matContornosDibujados = OpenCvSharp.Unity.TextureToMat(texturaDescargada).Resize(new Size(0, 0), escalaInput, escalaInput, interpolacionDeEscala);
 
-            var contornosDibujar = islas.SelectMany(e => e.hullsHijos).ToArray();
+            var contornosDibujarX = islas.SelectMany(e => e.hullsHijos).ToArray();
             if (maxContornosDibujados > 0)
             {
                 if (Procesando("Ordenando", "Ordenando contornos por area", 1f)) return;
-                contornosDibujar = contornosDibujar.OrderByDescending(e => Cv2.ContourArea(e)).ToArray();
+                contornosDibujarX = contornosDibujarX.OrderByDescending(e => Cv2.ContourArea(e)).ToArray();
             }
-            for (int i = 0; i < contornosDibujar.Length && (i < maxContornosDibujados || maxContornosDibujados <= 0); i++)
+
+            foreach (var isla in islas)
             {
-                var colContorno = coloresContornos.Evaluate((i % loopColoresContornos) / (float)loopColoresContornos);
-                colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 255);
-                if (Procesando("Dibujando", $"Dibujando el contorno {i}", i / (float)contornosDibujar.Length)) return;
-                // Cv2.DrawContours(matContornosDibujados, contornosDibujar, i, colScalar, 1, dibujoContornos);
-                // Cv2.FillConvexPoly(matContornosDibujados, contornosDibujar[i], colScalar, dibujoContornos);
-
-                if (contornosDibujar[i].Length > 4)
+                var contornosDibujar = isla.hullsHijos;
+                var grupoDeRecuadros = new List<Recuadro>();
+                for (int i = 0; i < contornosDibujar.Count && (i < maxContornosDibujados || maxContornosDibujados <= 0); i++)
                 {
-                    colScalar = new Scalar(0 * 255, 1 * 255, 0 * 255, colContorno.a * 255);
-                    var elipse = Cv2.FitEllipse(contornosDibujar[i]);
-                    var minLadoElipse = Mathf.Min(elipse.Size.Width, elipse.Size.Height);
-                    // Cv2.Ellipse(matContornosDibujados, elipse, colScalar);
+                    var colContorno = coloresContornos.Evaluate((i % loopColoresContornos) / (float)loopColoresContornos);
+                    // colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 255);
+                    // if (Procesando("Dibujando", $"Dibujando el contorno {i}", i / (float)contornosDibujar.Length)) return;
+                    // Cv2.DrawContours(matContornosDibujados, contornosDibujar, i, colScalar, 1, dibujoContornos);
+                    // Cv2.FillConvexPoly(matContornosDibujados, contornosDibujar[i], colScalar, dibujoContornos);
 
-                    var contorno = contornosDibujar[i];
-                    var distancias = contorno.Select((e, index) => Point.Distance(e, contorno[(index + 1) % contorno.Length])).ToArray();
-                    var angulos = contorno.Select((e, index) =>
-                        Mathf.Rad2Deg * Mathf.Atan2(e.Y - contorno[(index + 1) % contorno.Length].Y, e.X - contorno[(index + 1) % contorno.Length].X))
-                        .ToArray();
-                    double perimetro = distancias.Sum();
-
-                    var lineas = new List<LineSegmentPoint>();
-                    Point puntoAPos = contorno[0];
-                    var distSumada = distancias[0];
-                    var anguloActual = angulos[0];
-                    int conter = 0;
-                    for (int j = 1; j < distancias.Length + 1; j++)
+                    if (contornosDibujar[i].Length > 4)
                     {
-                        colContorno = coloresContornos.Evaluate((conter % loopColoresContornos) / (float)loopColoresContornos);
-                        colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 255);
+                        if (Procesando("Recuadro", $"Generando recuadro: {i + 1}/{contornosDibujar.Count}", (i + 1f) / contornosDibujar.Count)) return;
+                        var recuadro = new Recuadro(contornosDibujar[i], toleranciaLineaRecta);
+                        grupoDeRecuadros.Add(recuadro);
+                        //deberia funcionar porque es un puntero a la lista (no una copia/foto actual)
+                        recuadro.GrupoDeRecuadros = grupoDeRecuadros;
+                        recuadro.DibujarDebug(matContornosDibujados, colContorno);
 
-                        if (Mathf.Abs(Mathf.DeltaAngle(angulos[j % distancias.Length], anguloActual)) < toleranciaLineaRecta)
+                        /*
+                        colScalar = new Scalar(0 * 255, 1 * 255, 0 * 255, colContorno.a * 255);
+                        // var elipse = Cv2.FitEllipse(contornosDibujar[i]);
+                        // var minLadoElipse = Mathf.Min(elipse.Size.Width, elipse.Size.Height);
+                        // Cv2.Ellipse(matContornosDibujados, elipse, colScalar);
+
+                        var contorno = contornosDibujar[i];
+                        var distancias = contorno.Select((e, index) => Point.Distance(e, contorno[(index + 1) % contorno.Length])).ToArray();
+                        var angulos = contorno.Select((e, index) =>
+                            Mathf.Rad2Deg * Mathf.Atan2(e.Y - contorno[(index + 1) % contorno.Length].Y, e.X - contorno[(index + 1) % contorno.Length].X))
+                            .ToArray();
+                        double perimetro = distancias.Sum();
+
+                        var lineas = new List<LineSegmentPoint>();
+                        Point puntoAPos = contorno[0];
+                        var distSumada = distancias[0];
+                        var anguloActual = angulos[0];
+                        int conter = 0;
+                        for (int j = 1; j < distancias.Length + 1; j++)
                         {
-                            distSumada += distancias[j % distancias.Length];
-                        }
-                        else
-                        {
-                            // if (distSumada >= minLadoElipse / 4d)
+                            colContorno = coloresContornos.Evaluate((conter % loopColoresContornos) / (float)loopColoresContornos);
+                            colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 255);
+
+                            if (Mathf.Abs(Mathf.DeltaAngle(angulos[j % distancias.Length], anguloActual)) < toleranciaLineaRecta)
                             {
-                                Cv2.Line(matContornosDibujados, puntoAPos, contorno[j%distancias.Length], colScalar);
-                                lineas.Add(new LineSegmentPoint(puntoAPos, contorno[j % distancias.Length]));
-                                conter++;
+                                distSumada += distancias[j % distancias.Length];
                             }
-                            puntoAPos = contorno[j % distancias.Length];
-                            anguloActual = angulos[j % distancias.Length];
-                            distSumada = distancias[j % distancias.Length];
+                            else
+                            {
+                                // if (distSumada >= minLadoElipse / 4d)
+                                {
+                                    Cv2.Line(matContornosDibujados, puntoAPos, contorno[j%distancias.Length], colScalar);
+                                    lineas.Add(new LineSegmentPoint(puntoAPos, contorno[j % distancias.Length]));
+                                    conter++;
+                                }
+                                puntoAPos = contorno[j % distancias.Length];
+                                anguloActual = angulos[j % distancias.Length];
+                                distSumada = distancias[j % distancias.Length];
+                            }
                         }
-                    }
-                    
-                    colContorno = coloresContornos.Evaluate((i % loopColoresContornos) / (float)loopColoresContornos);
-                    colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 50);
 
-                    lineas=lineas.Select((lin,index)=>new {index=index,lin=lin})
-                        .OrderByDescending(lin=>lin.lin.P1.DistanceTo(lin.lin.P2)).Take(4)
-                        .OrderBy(lin=>lin.index).Select(lin=>lin.lin).ToList();
-                    foreach(var lin in lineas) {                        
-                        Cv2.Line(matContornosDibujados, lin.P1,lin.P2, colScalar,2);
-                    }
+                        colContorno = coloresContornos.Evaluate((i % loopColoresContornos) / (float)loopColoresContornos);
+                        colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 50);
 
-                    List<Point> polis = new List<Point>();
-                    for (int j = 0; j < lineas.Count; j++)
-                    {
-                        Point? interx = lineas[j].LineIntersection(lineas[(j + 1) % lineas.Count]);
-                        if (interx.HasValue)
+                        lineas=lineas.Select((lin,index)=>new {index=index,lin=lin})
+                            .OrderByDescending(lin=>lin.lin.P1.DistanceTo(lin.lin.P2)).Take(4)
+                            .OrderBy(lin=>lin.index).Select(lin=>lin.lin).ToList();
+                        foreach(var lin in lineas) {                        
+                            Cv2.Line(matContornosDibujados, lin.P1,lin.P2, colScalar,2);
+                        }
+
+                        List<Point> polis = new List<Point>();
+                        for (int j = 0; j < lineas.Count; j++)
                         {
-                            Cv2.Circle(matContornosDibujados,interx.Value,10,colScalar);
-                            polis.Add(interx.Value);
+                            Point? interx = lineas[j].LineIntersection(lineas[(j + 1) % lineas.Count]);
+                            if (interx.HasValue)
+                            {
+                                Cv2.Circle(matContornosDibujados,interx.Value,10,colScalar);
+                                polis.Add(interx.Value);
+                            }
                         }
+                        // if (polis.Count == 4) Cv2.FillConvexPoly(matContornosDibujados, polis, colScalar, dibujoContornos);
+                        */
                     }
-                    // if (polis.Count == 4) Cv2.FillConvexPoly(matContornosDibujados, polis, colScalar, dibujoContornos);
-                    
                 }
+                recuadros.AddRange(grupoDeRecuadros);
+
             }
             ActualizarMuestra(muestraContornos, matContornosDibujados);
+
+            if (muestraRecuadro && recuadros.Count>0) {
+                if (Procesando("Normalizando", "Normalizando recuadro", 1f)) return;
+                var rec = recuadros[ selectorRecuadro%recuadros.Count];
+                ActualizarMuestra(muestraRecuadro,rec.Normalizar(matOriginal,1f/escalaInput));
+            }
         }
 
         Procesando(null);
@@ -329,7 +411,7 @@ public class EncontrarRecuadros : MonoBehaviour
         {
             EditorUtility.ClearProgressBar();
             EditorWindow view = EditorWindow.GetWindow<SceneView>();
-            if(view) view.Repaint();
+            if (view) view.Repaint();
             Canvas.ForceUpdateCanvases();
             return false;
         }
@@ -502,7 +584,8 @@ public class EncontrarRecuadros : MonoBehaviour
 
 #if UNITY_EDITOR
     [ContextMenu("Select Texturas Libres")]
-     private void SelectTexturas() {
+    private void SelectTexturas()
+    {
         Selection.objects = FindObjectsOfType<Texture>();
     }
 
