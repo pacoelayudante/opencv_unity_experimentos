@@ -48,6 +48,9 @@ public class EncontrarRecuadros : MonoBehaviour
     public int maxContornosDibujados = 0;
     public UnityEngine.UI.RawImage muestraContornos;
 
+    [Header("Recuadro")]
+    public float toleranciaLineaRecta = 25f;
+
     Texture2D texturaDescargada;
     Mat matProcesada, matContornosDibujados, matGrisEscalada;
 
@@ -66,7 +69,8 @@ public class EncontrarRecuadros : MonoBehaviour
                 if (hijos == null || hijos.Count == 0) return -1;
                 if (areaHijos == -1)
                 {
-                    areaHijos = hijos.Aggregate(0d, (cant, conto) => Cv2.ContourArea(conto) + cant, res => res);
+                    // areaHijos = hijos.Aggregate(0d, (cant, conto) => Cv2.ContourArea(conto) + cant, res => res);
+                    areaHijos = hijos.Select(e => Cv2.ContourArea(e)).Sum();
                 }
                 return areaHijos;
             }
@@ -102,6 +106,64 @@ public class EncontrarRecuadros : MonoBehaviour
         public void GeneararHijosHulls()
         {
             hullsHijos = hijos.Select(e => Cv2.ConvexHull(e)).ToList();
+        }
+    }
+
+    class Recuadro {
+        Point[] contorno;
+        double[] distanciasContornoOriginal;
+        float[] angulosOriginal;
+        double perimetroOriginal;
+        Point[] encuadre = new Point[4];
+
+        public Recuadro(int indice, Point[][] contornosOriginal, float toleranciaLineaRecta):this(indice,contornosOriginal,toleranciaLineaRecta,Color.red){}
+        public Recuadro(int indice, Point[][] contornosOriginal, float toleranciaLineaRecta, Color color) {
+            contorno = contornosOriginal[indice];
+            distanciasContornoOriginal = contorno.Select((e, index) => Point.Distance(e, contorno[(index + 1) % contorno.Length])).ToArray();
+            angulosOriginal = contorno.Select((e, index) =>
+                Mathf.Rad2Deg*Mathf.Atan2(e.Y - contorno[(index + 1) % contorno.Length].Y, e.X - contorno[(index + 1) % contorno.Length].X) )
+                .ToArray();
+            perimetroOriginal = distanciasContornoOriginal.Sum();
+            
+            var distancias = distanciasContornoOriginal;
+            var angulos = angulosOriginal;
+                    var lineas = new List<LineSegmentPoint>();
+                    Point puntoAPos = contorno[0];
+                    var distSumada = distancias[0];
+                    var anguloActual = angulos[0];
+                    int conter = 0;
+                    for (int j = 1; j < distancias.Length + 1; j++)
+                    {
+                        if (Mathf.Abs(Mathf.DeltaAngle(angulos[j % distancias.Length], anguloActual)) <= toleranciaLineaRecta)
+                        {
+                            distSumada += distancias[j % distancias.Length];
+                        }
+                        else
+                        {
+                            // if (distSumada >= minLadoElipse / 4d)
+                            {
+                                // Cv2.Line(matContornosDibujados, puntoAPos, contorno[j%distancias.Length], colScalar);
+                                lineas.Add(new LineSegmentPoint(puntoAPos, contorno[j % distancias.Length]));
+                                conter++;
+                            }
+                            puntoAPos = contorno[j % distancias.Length];
+                            anguloActual = angulos[j % distancias.Length];
+                            distSumada = distancias[j % distancias.Length];
+                        }
+                    }
+                    lineas.OrderByDescending(lin=>lin.P1.DistanceTo(lin.P2)).Take(4).ToArray();
+                    List<Point> polis = new List<Point>();
+                    
+                    var colEscalar = new Scalar(color.b,color.g,color.r,color.a);
+                    for (int j = 0; j < lineas.Count; j++)
+                    {
+                        Point? interx = lineas[j].LineIntersection(lineas[(j + 1) % lineas.Count]);
+                        if (interx.HasValue)
+                        {
+                            // Cv2.Circle(matContornosDibujados,interx.Value,10,colScalar);
+                            polis.Add(interx.Value);
+                        }
+                    }
         }
     }
 
@@ -185,20 +247,74 @@ public class EncontrarRecuadros : MonoBehaviour
                 var colContorno = coloresContornos.Evaluate((i % loopColoresContornos) / (float)loopColoresContornos);
                 colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 255);
                 if (Procesando("Dibujando", $"Dibujando el contorno {i}", i / (float)contornosDibujar.Length)) return;
-                Cv2.DrawContours(matContornosDibujados, contornosDibujar, i, colScalar, 1, dibujoContornos);
+                // Cv2.DrawContours(matContornosDibujados, contornosDibujar, i, colScalar, 1, dibujoContornos);
+                // Cv2.FillConvexPoly(matContornosDibujados, contornosDibujar[i], colScalar, dibujoContornos);
 
-                // if (contornosDibujar[i].Length > 4)
-                // {
-                //     colScalar = new Scalar(0 * 255, 1 * 255, 0 * 255, colContorno.a * 255);
-                //     var elipse = Cv2.FitEllipse(contornosDibujar[i]);
-                //     Cv2.Ellipse(matContornosDibujados, elipse, colScalar);
-                // }
-                    // var rect = Cv2.MinAreaRect(contornosDibujar[i]);
-                    // var rectPs = rect.Points();
-                    // Cv2.Line(matContornosDibujados, rectPs[0],rectPs[1], colScalar);
-                    // Cv2.Line(matContornosDibujados, rectPs[2],rectPs[1], colScalar);
-                    // Cv2.Line(matContornosDibujados, rectPs[3],rectPs[2], colScalar);
-                    // Cv2.Line(matContornosDibujados, rectPs[0],rectPs[3], colScalar);
+                if (contornosDibujar[i].Length > 4)
+                {
+                    colScalar = new Scalar(0 * 255, 1 * 255, 0 * 255, colContorno.a * 255);
+                    var elipse = Cv2.FitEllipse(contornosDibujar[i]);
+                    var minLadoElipse = Mathf.Min(elipse.Size.Width, elipse.Size.Height);
+                    // Cv2.Ellipse(matContornosDibujados, elipse, colScalar);
+
+                    var contorno = contornosDibujar[i];
+                    var distancias = contorno.Select((e, index) => Point.Distance(e, contorno[(index + 1) % contorno.Length])).ToArray();
+                    var angulos = contorno.Select((e, index) =>
+                        Mathf.Rad2Deg * Mathf.Atan2(e.Y - contorno[(index + 1) % contorno.Length].Y, e.X - contorno[(index + 1) % contorno.Length].X))
+                        .ToArray();
+                    double perimetro = distancias.Sum();
+
+                    var lineas = new List<LineSegmentPoint>();
+                    Point puntoAPos = contorno[0];
+                    var distSumada = distancias[0];
+                    var anguloActual = angulos[0];
+                    int conter = 0;
+                    for (int j = 1; j < distancias.Length + 1; j++)
+                    {
+                        colContorno = coloresContornos.Evaluate((conter % loopColoresContornos) / (float)loopColoresContornos);
+                        colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 255);
+
+                        if (Mathf.Abs(Mathf.DeltaAngle(angulos[j % distancias.Length], anguloActual)) < toleranciaLineaRecta)
+                        {
+                            distSumada += distancias[j % distancias.Length];
+                        }
+                        else
+                        {
+                            // if (distSumada >= minLadoElipse / 4d)
+                            {
+                                Cv2.Line(matContornosDibujados, puntoAPos, contorno[j%distancias.Length], colScalar);
+                                lineas.Add(new LineSegmentPoint(puntoAPos, contorno[j % distancias.Length]));
+                                conter++;
+                            }
+                            puntoAPos = contorno[j % distancias.Length];
+                            anguloActual = angulos[j % distancias.Length];
+                            distSumada = distancias[j % distancias.Length];
+                        }
+                    }
+                    
+                    colContorno = coloresContornos.Evaluate((i % loopColoresContornos) / (float)loopColoresContornos);
+                    colScalar = new Scalar(colContorno.b * 255, colContorno.g * 255, colContorno.r * 255, colContorno.a * 50);
+
+                    lineas=lineas.Select((lin,index)=>new {index=index,lin=lin})
+                        .OrderByDescending(lin=>lin.lin.P1.DistanceTo(lin.lin.P2)).Take(4)
+                        .OrderBy(lin=>lin.index).Select(lin=>lin.lin).ToList();
+                    foreach(var lin in lineas) {                        
+                        Cv2.Line(matContornosDibujados, lin.P1,lin.P2, colScalar,2);
+                    }
+
+                    List<Point> polis = new List<Point>();
+                    for (int j = 0; j < lineas.Count; j++)
+                    {
+                        Point? interx = lineas[j].LineIntersection(lineas[(j + 1) % lineas.Count]);
+                        if (interx.HasValue)
+                        {
+                            Cv2.Circle(matContornosDibujados,interx.Value,10,colScalar);
+                            polis.Add(interx.Value);
+                        }
+                    }
+                    // if (polis.Count == 4) Cv2.FillConvexPoly(matContornosDibujados, polis, colScalar, dibujoContornos);
+                    
+                }
             }
             ActualizarMuestra(muestraContornos, matContornosDibujados);
         }
@@ -212,6 +328,9 @@ public class EncontrarRecuadros : MonoBehaviour
         if (titulo == null)
         {
             EditorUtility.ClearProgressBar();
+            EditorWindow view = EditorWindow.GetWindow<SceneView>();
+            if(view) view.Repaint();
+            Canvas.ForceUpdateCanvases();
             return false;
         }
         if (EditorUtility.DisplayCancelableProgressBar(titulo, info, progreso))
@@ -382,6 +501,11 @@ public class EncontrarRecuadros : MonoBehaviour
 #endif
 
 #if UNITY_EDITOR
+    [ContextMenu("Select Texturas Libres")]
+     private void SelectTexturas() {
+        Selection.objects = FindObjectsOfType<Texture>();
+    }
+
     [CustomEditor(typeof(EncontrarRecuadros))]
     public class EncontrarRecuadrosEditor : Editor
     {
@@ -408,12 +532,15 @@ public class EncontrarRecuadros : MonoBehaviour
                 }
             }
             EditorGUILayout.ObjectField(encontrador.texturaDescargada, typeof(Texture2D), true);
-            EditorGUI.BeginDisabledGroup(encontrador.descargando || encontrador.texturaDescargada == null);
+            EditorGUI.BeginDisabledGroup(encontrador.descargando ||
+                (encontrador.texturaDescargada == null &&
+                !(encontrador.muestraDescargada ? encontrador.muestraDescargada.texture : null)));
             if (GUILayout.Button("Reprocesar"))
             {
                 try
                 {
-                    encontrador.ActualizarTexturaOrigen(encontrador.texturaDescargada);
+                    encontrador.ActualizarTexturaOrigen(encontrador.texturaDescargada ?
+                    encontrador.texturaDescargada : (encontrador.muestraDescargada.texture as Texture2D));
                 }
                 catch (System.Exception e)
                 {
