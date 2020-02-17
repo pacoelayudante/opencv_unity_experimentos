@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using OpenCvSharp;
 using System.Linq;
+using Mathd = System.Math;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
@@ -53,6 +54,28 @@ public class EncontrarRecuadros : MonoBehaviour
     public float toleranciaLineaRecta = 25f;
     public int selectorRecuadro = 0;
     public UnityEngine.UI.RawImage muestraRecuadro;
+    [Space]
+    public int tamRoiEsquina = 30;
+
+    public HoughMethods houghLinesMetodo = HoughMethods.Standard;
+    public int houghUmbral = 20;
+    public double houghRho = 1d;
+    public double houghThetaDiv = 180d;
+    public double Theta { get => System.Math.PI / houghThetaDiv; }
+    [Ocultador("houghLinesMetodo", (int)HoughMethods.MultiScale)]
+    [Tooltip("for the multi-scale Hough transform, it is a divisor for the distance resolution rho . The coarse accumulator distance resolution is rho and the accurate accumulator resolution is rho/srn . If both srn=0 and stn=0 , the classical Hough transform is used. Otherwise, both these parameters should be positive.")]
+    public double houghSrn = 1d;
+    [Ocultador("houghLinesMetodo", (int)HoughMethods.MultiScale)]
+    [Tooltip("for the multi-scale Hough transform, it is a divisor for the distance resolution theta.")]
+    public double houghStn = 1d;
+    [Ocultador("houghLinesMetodo", (int)HoughMethods.Probabilistic)]
+    [Tooltip("minimum line length. Line segments shorter than that are rejected.")]
+    public double houghMinLineLength = 0d;
+    [Ocultador("houghLinesMetodo", (int)HoughMethods.Probabilistic)]
+    [Tooltip("maximum allowed gap between points on the same line to link them.")]
+    public double houghMaxLineGap = 0d;
+    public Vector2 cannyPreHough = new Vector2(50, 150);
+    public UnityEngine.UI.RawImage esquinaA, esquinaB, esquinaC, esquinaD;
 
     Texture2D texturaDescargada;
     Mat matProcesada, matContornosDibujados, matGrisEscalada, matOriginal;
@@ -120,6 +143,7 @@ public class EncontrarRecuadros : MonoBehaviour
         double perimetroOriginal;
         Point[] encuadre = new Point[4];
         List<LineSegmentPoint> ladosCuadrilatero;
+        public List<double[]> thetasDeVertices;
         List<Point2f> verticesCuadrilatero;
         List<Recuadro> grupoDeRecuadros;
         double anchoSupuesto, altoSupuesto;
@@ -171,10 +195,16 @@ public class EncontrarRecuadros : MonoBehaviour
                 .OrderByDescending(lin => lin.lin.P1.DistanceTo(lin.lin.P2)).Take(4)
                 .OrderBy(lin => lin.index).Select(lin => lin.lin).ToList();
             verticesCuadrilatero = new List<Point2f>();
+            thetasDeVertices = new List<double[]>();
 
             for (int j = 0; j < ladosCuadrilatero.Count; j++)
             {
-                Point? interx = ladosCuadrilatero[j].LineIntersection(ladosCuadrilatero[(j + 1) % ladosCuadrilatero.Count]);
+                int j2 = (j + 1) % ladosCuadrilatero.Count;
+                thetasDeVertices.Add(new double[]{
+                    Mathf.Atan2(ladosCuadrilatero[j].P1.Y-ladosCuadrilatero[j].P2.Y,ladosCuadrilatero[j].P1.X-ladosCuadrilatero[j].P2.X),
+                    Mathf.Atan2(ladosCuadrilatero[j2].P2.Y-ladosCuadrilatero[j2].P1.Y,ladosCuadrilatero[j2].P2.X-ladosCuadrilatero[j2].P1.X)
+                });//.Select(ang => Mathd.Sin(ang) < 0 ? ang + Mathd.PI : ang).ToArray());
+                Point? interx = ladosCuadrilatero[j].LineIntersection(ladosCuadrilatero[j2]);
                 if (interx.HasValue)
                 {
                     verticesCuadrilatero.Add(interx.Value);
@@ -199,12 +229,33 @@ public class EncontrarRecuadros : MonoBehaviour
             }
         }
 
+        public OpenCvSharp.Rect GetRoi(int indiceVertice, int tam = 30, float escalaInput = 1f)
+        {
+            return new OpenCvSharp.Rect(
+                Mathf.FloorToInt(verticesCuadrilatero[indiceVertice].X / escalaInput - tam / 2),
+                Mathf.FloorToInt(verticesCuadrilatero[indiceVertice].Y / escalaInput - tam / 2),
+                tam, tam);
+        }
+
         public void DibujarDebug(Mat imagen, Color col, int grosorLado = 2, int radioVertices = 10)
         {
             if (imagen == null) return;
             var colEscalar = new Scalar(col.b * 255, col.g * 255, col.r * 255, col.a * 255);
             foreach (var vertice in verticesCuadrilatero) Cv2.Circle(imagen, vertice, radioVertices, colEscalar);
             foreach (var lin in ladosCuadrilatero) Cv2.Line(imagen, lin.P1, lin.P2, colEscalar, grosorLado);
+
+            colEscalar = new Scalar(0, 255, 0, col.a * 255);
+            var lineasPolares = ladosCuadrilatero.Select(seg =>
+            {
+                var offp1 = seg.P2 - seg.P1;
+                var ang = System.Math.Atan2(offp1.Y, offp1.X);
+                // var inter = seg.LineIntersection(new LineSegmentPoint(new Point2f( 0,0),new Point2f( Mathf.Cos(ang),Mathf.Sin(ang))));
+                // var linea = new LineSegmentPolar( (float)inter.Value.DistanceTo(new Point2f(0,0)),ang);
+                // var linea = new LineSegmentPolar( imagen.Width/2,(float)ang);
+                // return new LineSegmentPoint(seg.P1, seg.P1+offp1*20);
+                return new LineSegmentPoint(seg.P1, seg.P1 + new Point(50 * System.Math.Cos(ang), 50 * System.Math.Sin(ang)));
+            });
+            foreach (var lin in lineasPolares) Cv2.Line(imagen, lin.P1, lin.P2, colEscalar, grosorLado * 2);
         }
 
         public Mat Normalizar(Mat origen, float escala = 1f)
@@ -261,6 +312,7 @@ public class EncontrarRecuadros : MonoBehaviour
         if (Procesando("Gris", "Convirtiendo en gris", 1f)) return;
         Cv2.CvtColor(matProcesada, matProcesada, ColorConversionCodes.BGR2GRAY);
         ActualizarMuestra(muestraGris, matProcesada);
+        matGrisEscalada = matProcesada.Clone();
         if (escalaInput != 1f)
         {
             if (Procesando("Escalando", $"Cambiando escala ({escalaInput})", 1f)) return;
@@ -306,7 +358,7 @@ public class EncontrarRecuadros : MonoBehaviour
             for (int i = 0; i < contornosDibujar.Count; i++)
             {
                 var colContorno = coloresContornos.Evaluate((i % loopColoresContornos) / (float)loopColoresContornos);
-                
+
                 if (contornosDibujar[i].Length > 4)
                 {
                     if (Procesando("Recuadro", $"Generando recuadro: {i + 1}/{contornosDibujar.Count}", (i + 1f) / contornosDibujar.Count)) return;
@@ -328,9 +380,112 @@ public class EncontrarRecuadros : MonoBehaviour
             if (Procesando("Normalizando", "Normalizando recuadro", 1f)) return;
             var rec = recuadros[selectorRecuadro % recuadros.Count];
             ActualizarMuestra(muestraRecuadro, rec.Normalizar(matOriginal, 1f / escalaInput));
+
+            CalcularRoisYLineas();
         }
 
         Procesando(null);
+    }
+
+    void CalcularRoisYLineas()
+    {
+        if (recuadros.Count == 0) return;
+        var rec = recuadros[selectorRecuadro % recuadros.Count];
+
+        Mat matroi = new Mat();
+        var centro = new Point(tamRoiEsquina / 2, tamRoiEsquina / 2);
+        var imgs = new UnityEngine.UI.RawImage[] { esquinaA, esquinaB, esquinaC, esquinaD };
+        for (int i = 0; i < imgs.Length; i++)
+        {
+            if (imgs[i] == null) continue;
+            var roiEsquina = new Mat(matGrisEscalada, rec.GetRoi(i, tamRoiEsquina, escalaInput)).Clone();
+            // Cv2.CvtColor(roiEsquina, roiEsquina, ColorConversionCodes.BGR2GRAY);
+            // Cv2.AdaptiveThreshold(roiEsquina, roiEsquina, valorNuevoDeUmbral, tipoAdaptativo, tipoUmbral, TamBloquePreHough, constanteAdaptativo);
+            Cv2.Canny(roiEsquina, roiEsquina, cannyPreHough.x, cannyPreHough.y, 3);
+
+            LineSegmentPoint[] resultadoSegmentos = null;
+            LineSegmentPolar[] resultadoLineas = null;
+
+            if (houghLinesMetodo == HoughMethods.Standard) resultadoLineas = Cv2.HoughLines(roiEsquina, houghRho, Theta, houghUmbral);
+            else if (houghLinesMetodo == HoughMethods.MultiScale)
+            {
+                if (houghSrn <= 0d) houghSrn = 1d;
+                if (houghStn <= 0d) houghStn = 1d;
+                resultadoLineas = Cv2.HoughLines(roiEsquina, houghRho, Theta, houghUmbral, houghSrn, houghStn);
+            }
+            else if (houghLinesMetodo == HoughMethods.Probabilistic)
+            {
+                resultadoSegmentos = Cv2.HoughLinesP(roiEsquina, houghRho, Theta, houghUmbral, houghMinLineLength, houghMaxLineGap);
+            }
+            else if (houghLinesMetodo == HoughMethods.Gradient) { }
+
+            // roiEsquina.SetTo(new Scalar(0));
+            Cv2.CvtColor(roiEsquina, roiEsquina, ColorConversionCodes.GRAY2BGR);
+            if (resultadoSegmentos != null)
+            {
+                var colEscalar = new Scalar(0, 0, 255);
+                foreach (var segm in resultadoSegmentos)
+                {
+                    Cv2.Line(roiEsquina, segm.P1, segm.P2, colEscalar);
+                }
+            }
+            if (resultadoLineas != null)
+            {
+                var colEscalar = new Scalar(0, 0, 255);
+
+                foreach (var segm in resultadoLineas)
+                {
+                    var ang = segm.Theta + Mathd.PI / 2d;
+                    var sin = Mathd.Sin(ang);
+                    if (sin < 0)
+                    {
+                        sin = -sin;
+                        ang += Mathd.PI;
+                    }
+                    var cos = Mathd.Cos(ang);
+                    ang *= Mathf.Rad2Deg;
+                    colEscalar = new Scalar(0, 0, 255);
+                    bool alineado = rec.thetasDeVertices[i].Any(thet =>
+                    {
+                        return Mathf.Abs(Mathf.DeltaAngle((float)thet * Mathf.Rad2Deg, (float)ang)) < toleranciaLineaRecta
+                        || Mathf.Abs(Mathf.DeltaAngle((float)thet * Mathf.Rad2Deg, (float)ang + 180)) < toleranciaLineaRecta;
+                    });
+                    if (alineado)
+                    {
+                        colEscalar = new Scalar(0, 255, 0);
+                    }
+                    Cv2.Line(roiEsquina, centro, centro + new Point(cos * 100d, sin * 100d), colEscalar);
+                    if(!alineado) break;
+                }
+
+                colEscalar = new Scalar(0, 255, 255);
+                // for (int j=0; j<4; j++)
+                {
+
+                    // var segm = segmlin.lin;
+
+                    // colEscalar = simil?new Scalar(0, 255, 0):new Scalar(0, 0, 255);
+                    foreach (var t in rec.thetasDeVertices[i].Select(t => new Point(Mathd.Cos(t) * 100d, Mathd.Sin(t) * 100d)))
+                    {
+                        // Debug.Log($"{Mathd.Cos(t)} // {Mathd.Sin(t)}");
+                        // Debug.Log(new Point(Mathd.Cos(t)*100d,Mathd.Sin(t)*100d));
+                        Cv2.Line(roiEsquina, centro, centro + t, colEscalar);
+                        colEscalar = new Scalar(255, 100, 255);
+                    }
+                    // Cv2.Line(roiEsquina, segm.P1, segm.P2, colEscalar);
+                    // if(!simil)break;
+                }
+
+                // foreach(var ang in rec.thetaDeLados) {
+                //     // var pollin = new LineSegmentPolar(tamRoiEsquina/2,Mathf.Abs( (float)ang));
+                //     //  var segm = pollin.ToSegmentPoint(tamRoiEsquina * 1000);
+                //      Cv2.Line(roiEsquina, tamRoiEsquina/2, tamRoiEsquina/2,
+                //      tamRoiEsquina/2+(int)(500*System.Math.Cos(ang)),tamRoiEsquina/2+(int)(500*System.Math.Sin(ang)), colEscalar);
+                // }
+            }
+
+            ActualizarMuestra(imgs[i], roiEsquina);
+        }
     }
 
     bool Procesando(string titulo, string info = "", float progreso = 0f)
@@ -553,6 +708,19 @@ public class EncontrarRecuadros : MonoBehaviour
                 {
                     encontrador.ActualizarTexturaOrigen(encontrador.texturaDescargada ?
                     encontrador.texturaDescargada : (encontrador.muestraDescargada.texture as Texture2D));
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError(e);
+                    EditorUtility.ClearProgressBar();
+                }
+            }
+            if (GUILayout.Button("Solo Esquinas"))
+            {
+                try
+                {
+                    encontrador.CalcularRoisYLineas();
+                    encontrador.Procesando(null);
                 }
                 catch (System.Exception e)
                 {
