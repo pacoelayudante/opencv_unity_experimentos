@@ -75,10 +75,10 @@ public class EncontrarRecuadros : MonoBehaviour
     [Tooltip("maximum allowed gap between points on the same line to link them.")]
     public double houghMaxLineGap = 0d;
     public Vector2 cannyPreHough = new Vector2(50, 150);
-    public UnityEngine.UI.RawImage esquinaA, esquinaB, esquinaC, esquinaD;
+    public UnityEngine.UI.RawImage muestraEsquina;
 
     Texture2D texturaDescargada;
-    Mat matProcesada, matContornosDibujados, matGrisEscalada, matOriginal;
+    Mat matProcesada, matContornosDibujados, matGrisSinEscalar, matOriginal;
 
     HierarchyIndex[] jerarquiaContornos;
     List<IslaContornos> islas = new List<IslaContornos>();
@@ -135,6 +135,24 @@ public class EncontrarRecuadros : MonoBehaviour
         }
     }
 
+    struct ConfigFiltroEsquina
+    {
+        public double cannyUmbralMenor, cannyUmbralMayor, houghRho, houghThetaDiv;
+        public int houghUmbral;
+        public Color colDiagonal;
+        public Scalar ColScalar => new Scalar(colDiagonal.b*255, colDiagonal.g*255, colDiagonal.r*255);
+        public double Theta => System.Math.PI / houghThetaDiv;
+
+        public void CannyEdges(Mat mat)
+        {
+            Cv2.Canny(mat, mat, cannyUmbralMenor, cannyUmbralMayor, 3);
+        }
+        public LineSegmentPolar[] HoughLines(Mat mat)
+        {
+            return Cv2.HoughLines(mat, houghRho, Theta, houghUmbral);
+        }
+    }
+
     class Recuadro
     {
         Point[] contornoOriginal;
@@ -148,6 +166,9 @@ public class EncontrarRecuadros : MonoBehaviour
         List<Recuadro> grupoDeRecuadros;
         double anchoSupuesto, altoSupuesto;
         List<Point2f> verticesNormalizados;
+
+        double thetaDiagonal;
+        int indexVerticeMarcaDiagonal = -1;
 
         public List<Recuadro> GrupoDeRecuadros
         {
@@ -203,7 +224,7 @@ public class EncontrarRecuadros : MonoBehaviour
                 thetasDeVertices.Add(new double[]{
                     Mathf.Atan2(ladosCuadrilatero[j].P1.Y-ladosCuadrilatero[j].P2.Y,ladosCuadrilatero[j].P1.X-ladosCuadrilatero[j].P2.X),
                     Mathf.Atan2(ladosCuadrilatero[j2].P2.Y-ladosCuadrilatero[j2].P1.Y,ladosCuadrilatero[j2].P2.X-ladosCuadrilatero[j2].P1.X)
-                });//.Select(ang => Mathd.Sin(ang) < 0 ? ang + Mathd.PI : ang).ToArray());
+                });
                 Point? interx = ladosCuadrilatero[j].LineIntersection(ladosCuadrilatero[j2]);
                 if (interx.HasValue)
                 {
@@ -236,6 +257,57 @@ public class EncontrarRecuadros : MonoBehaviour
                 Mathf.FloorToInt(verticesCuadrilatero[indiceVertice].Y / escalaInput - tam / 2),
                 tam, tam);
         }
+        public Mat BuscarMarcaDiagonal(Mat matRefe, int tamCuadrado, float escalaInput,
+            double toleranciaLineaRecta, bool dibujarDebug, ConfigFiltroEsquina config)
+        {
+            var centro = new Point(tamCuadrado/2, tamCuadrado/2);
+            LineSegmentPolar[] resultadoLineas = null;
+            for (int i = 0; i < 4; i++)
+            {
+                var matRoiClone = new Mat(matRefe, GetRoi(i, tamCuadrado, escalaInput)).Clone();
+                config.CannyEdges(matRoiClone);
+                resultadoLineas = config.HoughLines(matRoiClone);
+                //esto es para dibujar (solo debug)
+                if (dibujarDebug)
+                {
+                    Cv2.CvtColor(matRoiClone, matRoiClone, ColorConversionCodes.GRAY2BGR);
+                }
+
+                foreach (var segm in resultadoLineas)
+                {
+                    var ang = segm.Theta + Mathd.PI / 2d;
+                    var sin = Mathd.Sin(ang);
+                    if (sin < 0)
+                    {
+                        sin = -sin;
+                        ang += Mathd.PI;
+                    }
+                    var cos = Mathd.Cos(ang);
+                    ang *= Mathf.Rad2Deg;
+                    bool alineado = thetasDeVertices[i].Any(thet =>
+                    {
+                        return Mathf.Abs(Mathf.DeltaAngle((float)thet * Mathf.Rad2Deg, (float)ang)) < toleranciaLineaRecta
+                        || Mathf.Abs(Mathf.DeltaAngle((float)thet * Mathf.Rad2Deg, (float)ang + 180)) < toleranciaLineaRecta;
+                    });
+                    if (!alineado)
+                    {
+                        if (dibujarDebug)
+                        {
+                            var offp = new Point(cos * tamCuadrado*2d, sin * tamCuadrado*2d);
+                            Cv2.Line(matRoiClone, centro - offp, centro + offp, config.ColScalar);
+                        }
+                        indexVerticeMarcaDiagonal = i;
+                        thetaDiagonal = ang;
+                        break;
+                    }
+                }
+                if (indexVerticeMarcaDiagonal != -1)
+                {
+                    return matRoiClone;
+                }
+            }
+            return null;
+        }
 
         public void DibujarDebug(Mat imagen, Color col, int grosorLado = 2, int radioVertices = 10)
         {
@@ -243,19 +315,6 @@ public class EncontrarRecuadros : MonoBehaviour
             var colEscalar = new Scalar(col.b * 255, col.g * 255, col.r * 255, col.a * 255);
             foreach (var vertice in verticesCuadrilatero) Cv2.Circle(imagen, vertice, radioVertices, colEscalar);
             foreach (var lin in ladosCuadrilatero) Cv2.Line(imagen, lin.P1, lin.P2, colEscalar, grosorLado);
-
-            colEscalar = new Scalar(0, 255, 0, col.a * 255);
-            var lineasPolares = ladosCuadrilatero.Select(seg =>
-            {
-                var offp1 = seg.P2 - seg.P1;
-                var ang = System.Math.Atan2(offp1.Y, offp1.X);
-                // var inter = seg.LineIntersection(new LineSegmentPoint(new Point2f( 0,0),new Point2f( Mathf.Cos(ang),Mathf.Sin(ang))));
-                // var linea = new LineSegmentPolar( (float)inter.Value.DistanceTo(new Point2f(0,0)),ang);
-                // var linea = new LineSegmentPolar( imagen.Width/2,(float)ang);
-                // return new LineSegmentPoint(seg.P1, seg.P1+offp1*20);
-                return new LineSegmentPoint(seg.P1, seg.P1 + new Point(50 * System.Math.Cos(ang), 50 * System.Math.Sin(ang)));
-            });
-            foreach (var lin in lineasPolares) Cv2.Line(imagen, lin.P1, lin.P2, colEscalar, grosorLado * 2);
         }
 
         public Mat Normalizar(Mat origen, float escala = 1f)
@@ -312,7 +371,7 @@ public class EncontrarRecuadros : MonoBehaviour
         if (Procesando("Gris", "Convirtiendo en gris", 1f)) return;
         Cv2.CvtColor(matProcesada, matProcesada, ColorConversionCodes.BGR2GRAY);
         ActualizarMuestra(muestraGris, matProcesada);
-        matGrisEscalada = matProcesada.Clone();
+        matGrisSinEscalar = matProcesada.Clone();
         if (escalaInput != 1f)
         {
             if (Procesando("Escalando", $"Cambiando escala ({escalaInput})", 1f)) return;
@@ -378,27 +437,48 @@ public class EncontrarRecuadros : MonoBehaviour
         if (muestraRecuadro && recuadros.Count > 0)
         {
             if (Procesando("Normalizando", "Normalizando recuadro", 1f)) return;
-            var rec = recuadros[selectorRecuadro % recuadros.Count];
-            ActualizarMuestra(muestraRecuadro, rec.Normalizar(matOriginal, 1f / escalaInput));
-
+            ActualizarMuestra(muestraRecuadro, recuadros[selectorRecuadro % recuadros.Count].Normalizar(matOriginal, 1f / escalaInput));
             CalcularRoisYLineas();
         }
 
         Procesando(null);
     }
 
-    void CalcularRoisYLineas()
+    void CalcularRoisYLineas(int indice=-1){
+        indice = selectorRecuadro>0?selectorRecuadro%recuadros.Count:0;
+        var rec = recuadros[selectorRecuadro % recuadros.Count];
+
+        Procesando("Marca", $"Buscando marca diagonal de aspect de {indice}");
+        var matResultante = rec.BuscarMarcaDiagonal(
+            matGrisSinEscalar, tamRoiEsquina, escalaInput, toleranciaLineaRecta, muestraEsquina,
+            new ConfigFiltroEsquina()
+            {
+                cannyUmbralMenor = cannyPreHough.x,
+                cannyUmbralMayor = cannyPreHough.y,
+                houghRho = houghRho,
+                houghThetaDiv = houghThetaDiv,
+                houghUmbral = houghUmbral,
+                colDiagonal = coloresContornos.Evaluate(0)
+            });
+        if (matResultante != null)
+        {
+            ActualizarMuestra(muestraEsquina, matResultante);
+        }
+    }
+
+    [System.Obsolete]
+    void CalcularRoisYLineasX()
     {
         if (recuadros.Count == 0) return;
         var rec = recuadros[selectorRecuadro % recuadros.Count];
 
         Mat matroi = new Mat();
         var centro = new Point(tamRoiEsquina / 2, tamRoiEsquina / 2);
-        var imgs = new UnityEngine.UI.RawImage[] { esquinaA, esquinaB, esquinaC, esquinaD };
+        var imgs = new UnityEngine.UI.RawImage[] { muestraEsquina };
         for (int i = 0; i < imgs.Length; i++)
         {
             if (imgs[i] == null) continue;
-            var roiEsquina = new Mat(matGrisEscalada, rec.GetRoi(i, tamRoiEsquina, escalaInput)).Clone();
+            var roiEsquina = new Mat(matGrisSinEscalar, rec.GetRoi(i, tamRoiEsquina, escalaInput)).Clone();
             // Cv2.CvtColor(roiEsquina, roiEsquina, ColorConversionCodes.BGR2GRAY);
             // Cv2.AdaptiveThreshold(roiEsquina, roiEsquina, valorNuevoDeUmbral, tipoAdaptativo, tipoUmbral, TamBloquePreHough, constanteAdaptativo);
             Cv2.Canny(roiEsquina, roiEsquina, cannyPreHough.x, cannyPreHough.y, 3);
@@ -455,7 +535,7 @@ public class EncontrarRecuadros : MonoBehaviour
                         colEscalar = new Scalar(0, 255, 0);
                     }
                     Cv2.Line(roiEsquina, centro, centro + new Point(cos * 100d, sin * 100d), colEscalar);
-                    if(!alineado) break;
+                    if (!alineado) break;
                 }
 
                 colEscalar = new Scalar(0, 255, 255);
@@ -678,7 +758,6 @@ public class EncontrarRecuadros : MonoBehaviour
     {
         public override void OnInspectorGUI()
         {
-            DrawDefaultInspector();
             var encontrador = target as EncontrarRecuadros;
             if (encontrador.descargando)
             {
@@ -729,6 +808,7 @@ public class EncontrarRecuadros : MonoBehaviour
                 }
             }
             EditorGUI.EndDisabledGroup();
+            DrawDefaultInspector();
         }
     }
 #endif
