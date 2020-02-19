@@ -8,8 +8,9 @@ using Mathd = System.Math;
 using UnityEditor;
 #endif
 
-class Recuadro
+public class Recuadro
 {
+    public int indiceContorno = -1;
     Point[] contornoOriginal;
     double[] distanciasContornoOriginal;
     float[] angulosOriginal;
@@ -39,8 +40,9 @@ class Recuadro
         }
     }
 
-    public Recuadro(Point[] contorno, float toleranciaLineaRecta)
+    public Recuadro(int indiceContorno, Point[] contorno, float toleranciaLineaRecta)
     {
+        this.indiceContorno=indiceContorno;
         contornoOriginal = contorno;
         distanciasContornoOriginal = contornoOriginal.Select((e, index) => Point.Distance(e, contornoOriginal[(index + 1) % contornoOriginal.Length])).ToArray();
         angulosOriginal = contornoOriginal.Select((e, index) =>
@@ -117,7 +119,7 @@ class Recuadro
             tam, tam);
     }
 
-    public Point BuscarInterseccionConMarcaDiagonal()
+    public Point BuscarInterseccionConMarcaDiagonal(Mat dibujarDebug=null, Scalar colorDibujoDebug=default(Scalar))
     {
         if (indexVerticeMarcaDiagonal == -1)
         {
@@ -168,6 +170,11 @@ class Recuadro
                     puntoCorteDiagonal = interx2.Value;
                     ladoDiagonalCortado = (indexVerticeMarcaDiagonal + 3) % ladosCuadrilatero.Count;
                 }
+                
+                if(dibujarDebug!=null) {
+                    Cv2.Circle(dibujarDebug,puntoCorteDiagonal,4,colorDibujoDebug);
+                    Cv2.Line(dibujarDebug,diagonal.P1,diagonal.P2,colorDibujoDebug);
+                }
 
                 double aspect = ladosCuadrilatero[ladoDiagonalCortado].Length(ladosCuadrilatero[ladoDiagonalCortado]) /
                     puntoCorteDiagonal.DistanceTo(ladosCuadrilatero[ladoDiagonalCortado].P1);
@@ -197,11 +204,32 @@ class Recuadro
             //esto es para dibujar (solo debug)
             if (dibujarDebug)
             {
+                // matRoiClone = matRoiClone.Clone();
                 Cv2.CvtColor(matRoiClone, matRoiClone, ColorConversionCodes.GRAY2BGR);
             }
 
             foreach (var segm in resultadoLineas)
             {
+                //aca vamos a filtrar las lineas que estan demasiado lejos del centro
+                //esto lo hice despues de lo de abajo, y esta mas mejor creo, en un futuro tendria que
+                //esparcir el uso de esto para lo de abajo porque creo que seria mas mejor
+                var cosSegm = Mathd.Cos(segm.Theta);
+                var sinSegm = Mathd.Sin(segm.Theta);
+                var lin2dLinda = new Line2D(-sinSegm,cosSegm,segm.Rho*cosSegm,segm.Rho*sinSegm);
+                if(dibujarDebug) {
+                        Point p1,p2;
+                        lin2dLinda.FitSize(tamCuadrado,tamCuadrado,out p1,out p2);
+                        var colcolcol = new Scalar(0,255,0);
+                        if (lin2dLinda.Distance(tamCuadrado/2,tamCuadrado/2)>tamCuadrado*0.05) colcolcol = new Scalar(0,100,0);
+                        Cv2.Line(matRoiClone, p1, p2, colcolcol);
+                }
+                if (lin2dLinda.Distance(tamCuadrado/2,tamCuadrado/2)>tamCuadrado*0.05) continue;
+
+                //esto esta todo medio mal, pero bueh
+                //basciamente la idea es ir descartando las lineas que se alinean
+                //con los lados del recuadro en perspectiva, cuando encontramos
+                //la primer linea que no se alinea bien segun la toleranciaLineaRecta
+                //nos imaginamos que esa es la linea diagonal y la tomamos y ya
                 var ang = segm.Theta + Mathd.PI / 2d;
                 var sin = Mathd.Sin(ang);
                 if (sin < 0)
@@ -211,6 +239,7 @@ class Recuadro
                 }
                 var cos = Mathd.Cos(ang);
                 var angdeg = (float)ang * Mathf.Rad2Deg;
+                //todo lo de arriba es para convertir la linea Polar que tengo de dato en algo mas util
                 bool alineado = thetasDeVertices[i].Any(thet =>
                 {
                     return Mathf.Abs(Mathf.DeltaAngle((float)thet * Mathf.Rad2Deg, angdeg)) < toleranciaLineaRecta
@@ -222,6 +251,14 @@ class Recuadro
                     {
                         var offp = new Point(cos * tamCuadrado * 2d, sin * tamCuadrado * 2d);
                         Cv2.Line(matRoiClone, centro - offp, centro + offp, config.ColScalar);
+                        var linp = segm.ToSegmentPoint(tamCuadrado*2);
+                        // Cv2.Line(matRoiClone, linp.P1, linp.P2, config.ColScalar);
+                        Cv2.Circle(matRoiClone,new Point(segm.Rho*Mathd.Cos(segm.Theta),segm.Rho*Mathd.Sin(segm.Theta)),10, config.ColScalar);
+                        Cv2.Line(matRoiClone, new Point(),new Point(segm.Rho*Mathd.Cos(segm.Theta),segm.Rho*Mathd.Sin(segm.Theta)), config.ColScalar);
+
+                        Point p1,p2;
+                        lin2dLinda.FitSize(tamCuadrado,tamCuadrado,out p1,out p2);
+                        Cv2.Line(matRoiClone, p1, p2, config.ColScalar);
                     }
                     indexVerticeMarcaDiagonal = i;
                     thetaDiagonal = ang;
